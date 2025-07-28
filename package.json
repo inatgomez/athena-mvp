@@ -1,0 +1,30 @@
+{
+  "name": "athena-mvp",
+  "version": "1.0.0",
+  "description": "Athena dApp monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "install:all": "pnpm install && cd packages/contracts && yarn install",
+    "build:contracts": "cd packages/contracts && forge build && npm run copy:abis",
+    "test:contracts": "cd packages/contracts && forge test",
+    "copy:abis": "mkdir -p packages/sdk/abi && cp -r packages/contracts/out/**/*.json packages/sdk/abi/ 2>/dev/null || true",
+    "build:sdk": "pnpm --filter sdk build",
+    "build:web": "pnpm --filter web build",
+    "build": "npm run build:contracts && npm run build:sdk && npm run build:web",
+    "dev:web": "pnpm --filter web dev",
+    "dev:contracts": "cd packages/contracts && forge test --watch",
+    "dev": "concurrently \"npm run dev:web\" \"npm run dev:contracts\"",
+    "clean": "pnpm --filter web clean && pnpm --filter sdk clean && cd packages/contracts && forge clean",
+    "deploy:testnet": "cd packages/contracts && forge script script/Deploy.s.sol --rpc-url story_testnet --broadcast"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
