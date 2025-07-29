@@ -14,13 +14,11 @@ apps/*/.next
 # Coverage
 /coverage
 
-# Foundry
-packages/contracts/lib
-
 # Foundry Build artifacts
 packages/contracts/artifacts/
 packages/contracts/cache/
 packages/contracts/out/
+packages/contracts/broadcast/
 
 # Foundry test reports and coverage
 packages/contracts/lcov-report/
