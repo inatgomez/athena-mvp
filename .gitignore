@@ -17,9 +17,22 @@ apps/*/.next
 # Foundry
 packages/contracts/lib
 
+# Foundry Build artifacts
+packages/contracts/artifacts/
+packages/contracts/cache/
+packages/contracts/out/
+
+# Foundry test reports and coverage
+packages/contracts/lcov-report/
+packages/contracts/coverage.json
+
 # Misc
 .DS_Store
 *.pem
+.vscode/
+.idea/
+*.swp
+*~
 
 # Logs
 npm-debug.log*
@@ -31,6 +44,7 @@ pnpm-debug.log*
 .env
 .env.local
 .env.*.local
+.env.*
 
 # Vercel
 .vercel
@@ -41,3 +55,5 @@ next-env.d.ts
 
 # Yarn
 .yarn
+
+
