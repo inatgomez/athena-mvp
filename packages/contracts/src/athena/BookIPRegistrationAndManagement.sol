@@ -117,7 +117,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     ///@notice Register a book as original IP with gas sponsoring
     ///@param recipient The recipient of the IP Asset (the author)
     ///@param ipMetadata Metadata for the IP Asset (the book)
-    ///@param licenseType Type of license (0: Commercial Remix, 1: Non-Commercial Remix, 2: Creative Commons)
+    ///@param licenseTypes Array of license types to attach (0: Commercial Remix, 1: Non-Commercial Remix, 2: Creative Commons)
     ///@param customCommercialFee Custom fee for commercial license (only used if licenseType == 1)
     ///@param customRoyaltyShare Custom royalty share percentage (only used if licenseType == 1)
     ///@param allowDuplicates Whether to allow duplicate metadata
@@ -127,7 +127,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     function registerBookWithSponsoredGas(
         address recipient,
         WorkflowStructs.IPMetadata calldata ipMetadata,
-        uint8 licenseType,
+        uint8[] calldata licenseTypes,
         uint256 customCommercialFee,
         uint32 customRoyaltyShare,
         bool allowDuplicates
@@ -144,15 +144,23 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
             authorizedAuthors[msg.sender] || msg.sender == owner(),
             "Not authorized to register books"
         );
-        require(licenseType <= 2, "Invalid license type");
+        require(
+            licenseTypes.length > 0 && licenseTypes.length <= 3,
+            "Invalid license types array"
+        );
 
         // TODO: Implement gas sponsoring logic here
         // This could be done through meta-transactions or by the contract paying
 
-        // Get the appropriate license terms based on type
+        // Validate all license types
+        for (uint i = 0; i < licenseTypes.length; i++) {
+            require(licenseTypes[i] <= 2, "Invalid license type");
+        }
+
+        // Get license terms for all requested types
         WorkflowStructs.LicenseTermsData[]
-            memory licenseTermsData = _getLicenseTermsForType(
-                licenseType,
+            memory licenseTermsData = _getMultipleLicenseTerms(
+                licenseTypes,
                 customCommercialFee,
                 customRoyaltyShare
             );
@@ -167,8 +175,16 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
                 allowDuplicates
             );
 
-        // Store custom fee if it's a commercial license
-        if (licenseType == 0 && customCommercialFee > 0) {
+        // Store custom fee if commercial license is included
+        bool hasCommercial = false;
+        for (uint i = 0; i < licenseTypes.length; i++) {
+            if (licenseTypes[i] == 0) {
+                hasCommercial = true;
+                break;
+            }
+        }
+
+        if (hasCommercial && customCommercialFee > 0) {
             customLicenseFees[ipId] = customCommercialFee;
             emit CustomLicenseFeeSet(ipId, customCommercialFee);
         }
@@ -233,57 +249,61 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         emit DerivativeCreated(childIpId, tokenId, parentIpIds[0]);
     }
 
-    ///@notice Internal function to get license terms based on type using PIL Flavors
-    ///@param licenseType 0: Commercial Remix, 1: Non-Commercial Remix, 2: Creative Commons
+    ///@notice Helper function to create license terms for multiple license types
+    ///@param licenseTypes Array of license types
     ///@param customFee Custom fee for commercial licenses
     ///@param customRoyalty Custom royalty share for commercial licenses (in Story format: 5% = 5000000)
-    function _getLicenseTermsForType(
-        uint8 licenseType,
+    function _getMultipleLicenseTerms(
+        uint8[] calldata licenseTypes,
         uint256 customFee,
         uint32 customRoyalty
     ) internal returns (WorkflowStructs.LicenseTermsData[] memory) {
         WorkflowStructs.LicenseTermsData[]
-            memory termsData = new WorkflowStructs.LicenseTermsData[](1);
-        PILTerms memory terms;
-
-        if (licenseType == 1) {
-            // Use PIL Flavor: Non-Commercial Social Remixing
-            terms = PILFlavors.nonCommercialSocialRemixing();
-        } else if (licenseType == 0) {
-            // Use PIL Flavor: Commercial Remix with custom fee/royalty
-            uint256 feeToUse = customFee > 0 ? customFee : 10 * 10 ** 18; // Default IP$10
-            uint32 royaltyToUse = customRoyalty > 0 ? customRoyalty : 5000000; // Default 5% (5 * 10^6)
-
-            terms = PILFlavors.commercialRemix(
-                feeToUse,
-                royaltyToUse,
-                royaltyPolicyAddress,
-                supportedCurrency
+            memory termsData = new WorkflowStructs.LicenseTermsData[](
+                licenseTypes.length
             );
-        } else {
-            // Use PIL Flavor: Creative Commons Attribution
-            terms = PILFlavors.creativeCommonsAttribution(
-                royaltyPolicyAddress,
-                supportedCurrency
-            );
+
+        for (uint i = 0; i < licenseTypes.length; i++) {
+            PILTerms memory terms;
+
+            if (licenseTypes[i] == 1) {
+                // Non-Commercial Social Remixing
+                terms = PILFlavors.nonCommercialSocialRemixing();
+            } else if (licenseTypes[i] == 0) {
+                // Commercial Remix
+                uint256 feeToUse = customFee > 0 ? customFee : 10 * 10 ** 18; // Default $10
+                uint32 royaltyToUse = customRoyalty > 0
+                    ? customRoyalty
+                    : 5000000; // Default 5%
+
+                terms = PILFlavors.commercialRemix(
+                    feeToUse,
+                    royaltyToUse,
+                    royaltyPolicyAddress,
+                    supportedCurrency
+                );
+            } else {
+                // Creative Commons Attribution
+                terms = PILFlavors.creativeCommonsAttribution(
+                    royaltyPolicyAddress,
+                    supportedCurrency
+                );
+            }
+
+            termsData[i] = WorkflowStructs.LicenseTermsData({
+                terms: terms,
+                licensingConfig: Licensing.LicensingConfig({
+                    isSet: false,
+                    mintingFee: 0,
+                    licensingHook: address(0),
+                    hookData: "",
+                    commercialRevShare: 0,
+                    disabled: false,
+                    expectMinimumGroupRewardShare: 0,
+                    expectGroupRewardPool: address(0)
+                })
+            });
         }
-
-        // Use default licensing config (no overrides)
-        Licensing.LicensingConfig memory config = Licensing.LicensingConfig({
-            isSet: false, // Use PIL terms defaults
-            mintingFee: 0,
-            licensingHook: address(0),
-            hookData: "",
-            commercialRevShare: 0,
-            disabled: false,
-            expectMinimumGroupRewardShare: 0,
-            expectGroupRewardPool: address(0)
-        });
-
-        termsData[0] = WorkflowStructs.LicenseTermsData({
-            terms: terms,
-            licensingConfig: config
-        });
 
         return termsData;
     }
