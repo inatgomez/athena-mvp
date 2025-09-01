@@ -10,11 +10,11 @@ import { ILicenseAttachmentWorkflows } from '@storyprotocol/periphery/interfaces
 import { IDerivativeWorkflows } from '@storyprotocol/periphery/interfaces/workflows/IDerivativeWorkflows.sol';
 import { WorkflowStructs } from '@storyprotocol/periphery/lib/WorkflowStructs.sol';
 
-///@title BookGateway.sol
+///@title BookIPRegistrationAndManagement.sol
 ///@notice Gateway contract for registering books as IP on Story Protocol.
 ///@dev Provides gas-sponsored registration and derivative management for literary works.
 
-contract BookGateway is Ownable, Pausable {
+contract BookIPRegistrationAndManagement is Ownable, Pausable {
     
     // State variables
     IRegistrationWorkflows public immutable registrationWorkflows;
