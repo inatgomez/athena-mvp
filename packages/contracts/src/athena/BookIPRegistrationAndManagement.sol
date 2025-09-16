@@ -6,30 +6,32 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ISPGNFT} from "@storyprotocol/periphery/interfaces/ISPGNFT.sol";
 import {IRegistrationWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IRegistrationWorkflows.sol";
-import {ILicenseAttachmentWorkflows} from "@storyprotocol/periphery/interfaces/workflows/ILicenseAttachmentWorkflows.sol";
+import {IRoyaltyTokenDistributionWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IRoyaltyTokenDistributionWorkflows.sol";
 import {IDerivativeWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IDerivativeWorkflows.sol";
+import {IRoyaltyWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IRoyaltyWorkflows.sol";
 import {WorkflowStructs} from "@storyprotocol/periphery/lib/WorkflowStructs.sol";
 import {PILTerms} from "@storyprotocol/core/interfaces/modules/licensing/IPILicenseTemplate.sol";
 import {Licensing} from "@storyprotocol/core/lib/Licensing.sol";
 import {PILFlavors} from "@storyprotocol/core/lib/PILFlavors.sol";
 
 ///@title BookIPRegistrationAndManagement.sol
-///@notice Gateway contract for registering books as IP on Story Protocol.
-///@dev Provides gas-sponsored registration and derivative management for literary works.
+///@notice Gateway contract for registering books as IP on Story Protocol with full royalty management.
 
 contract BookIPRegistrationAndManagement is Ownable, Pausable {
     // State variables
     IRegistrationWorkflows public immutable registrationWorkflows;
-    ILicenseAttachmentWorkflows public immutable licenseAttachmentWorkflows;
+    IRoyaltyTokenDistributionWorkflows
+        public immutable royaltyDistributionWorkflows;
     IDerivativeWorkflows public immutable derivativeWorkflows;
+    IRoyaltyWorkflows public immutable royaltyWorkflows;
     address public spgNftCollection;
 
     // PIL Template and supported currency
     address public immutable pilTemplate;
     address public immutable supportedCurrency; // Wrapped $IP
-    address public immutable royaltyPolicyAddress;
+    address public immutable royaltyPolicyAddress; //LAP Policy
 
-    // Whitelisting
+    // Whitelisting for authors (root IPs only)
     mapping(address => bool) public authorizedAuthors;
 
     // Custom license fees (ipId => fee in wei)
@@ -40,20 +42,27 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     event BookRegistered(
         address indexed ipId,
         uint256 indexed tokenId,
-        uint256[] indexed licenseTerms
+        uint256[] indexed licenseTerms,
+        address royaltyVault
     );
     event DerivativeCreated(
         address indexed childIpId,
         uint256 indexed tokenId,
-        address indexed parentIpId
+        address indexed parentIpId,
+        uint256 licensingFeesPaid
     );
-    event CustomLicenseFeeSet(address indexed ipId, uint256 fee);
+    event RoyaltiesClaimed(
+        address indexed ipId,
+        address indexed claimer,
+        uint256[] amounts
+    );
 
     constructor(
         address initialOwner,
         address _registrationWorkflows,
-        address _licenseAttachmentWorkflows,
+        address _royaltyDistributionWorkflows,
         address _derivativeWorkflows,
+        address _royaltyWorkflows,
         address _pilTemplate,
         address _supportedCurrency,
         address _royaltyPolicyAddress
@@ -64,12 +73,16 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
             "Invalid RegistrationWorkflows address"
         );
         require(
-            _licenseAttachmentWorkflows != address(0),
-            "Invalid LicenseAttachmentWorkflows address"
+            _royaltyDistributionWorkflows != address(0),
+            "Invalid RoyaltyDistributionWorkflows address"
         );
         require(
             _derivativeWorkflows != address(0),
             "Invalid DerivativeWorkflows address"
+        );
+        require(
+            _royaltyWorkflows != address(0),
+            "Invalid RoyaltyWorkflows address"
         );
         require(_pilTemplate != address(0), "Invalid PIL template address");
         require(_supportedCurrency != address(0), "Invalid currency address");
@@ -79,10 +92,11 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         );
 
         registrationWorkflows = IRegistrationWorkflows(_registrationWorkflows);
-        licenseAttachmentWorkflows = ILicenseAttachmentWorkflows(
-            _licenseAttachmentWorkflows
+        royaltyDistributionWorkflows = IRoyaltyTokenDistributionWorkflows(
+            _royaltyDistributionWorkflows
         );
         derivativeWorkflows = IDerivativeWorkflows(_derivativeWorkflows);
+        royaltyWorkflows = IRoyaltyWorkflows(_royaltyWorkflows);
         pilTemplate = _pilTemplate;
         supportedCurrency = _supportedCurrency;
         royaltyPolicyAddress = _royaltyPolicyAddress;
@@ -107,19 +121,21 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         emit BookCollectionCreated(spgNftCollection);
     }
 
-    ///@notice Whitelist an author
+    ///@notice Whitelist an author for book registration
     ///@param author The author's address
     ///@param authorized True to whitelist, false to remove
     function setAuthorized(address author, bool authorized) external onlyOwner {
         authorizedAuthors[author] = authorized;
     }
 
-    ///@notice Register a book as original IP with gas sponsoring
+    ///@notice Register a book as original IP with integrated royalty management
+    ///@dev Uses royalty distribution workflows for atomic IP+license+royalty setup
     ///@param recipient The recipient of the IP Asset (the author)
     ///@param ipMetadata Metadata for the IP Asset (the book)
     ///@param licenseTypes Array of license types to attach (0: Commercial Remix, 1: Non-Commercial Remix, 2: Creative Commons)
     ///@param customCommercialFee Custom fee for commercial license (only used if licenseType == 1)
     ///@param customRoyaltyShare Custom royalty share percentage (only used if licenseType == 1)
+    ///@param royaltyShares Information for royalty token distribution
     ///@param allowDuplicates Whether to allow duplicate metadata
     ///@return ipId The IP Asset ID
     ///@return tokenId the NFT token ID
@@ -130,6 +146,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         uint8[] calldata licenseTypes,
         uint256 customCommercialFee,
         uint32 customRoyaltyShare,
+        WorkflowStructs.RoyaltyShare[] calldata royaltyShares,
         bool allowDuplicates
     )
         external
@@ -152,6 +169,13 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         // TODO: Implement gas sponsoring logic here
         // This could be done through meta-transactions or by the contract paying
 
+        // Validate royalty shares sum to 100%
+        uint32 totalShares = 0;
+        for (uint i = 0; i < royaltyShares.length; i++) {
+            totalShares += royaltyShares[i].percentage;
+        }
+        require(totalShares == 100_000_000, "Royalty shares must sum to 100%");
+
         // Validate all license types
         for (uint i = 0; i < licenseTypes.length; i++) {
             require(licenseTypes[i] <= 2, "Invalid license type");
@@ -165,34 +189,30 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
                 customRoyaltyShare
             );
 
-        // Mint NFT, register IP, attach license terms, and tranfer to recipient
-        (ipId, tokenId, licenseTermsIds) = licenseAttachmentWorkflows
-            .mintAndRegisterIpAndAttachPILTerms(
+        // Mint + Register + Attach Licenses + Deploy Vault + Distribute Royalty Tokens
+        (ipId, tokenId, licenseTermsIds) = royaltyDistributionWorkflows
+            .mintAndRegisterIpAndAttachPILTermsAndDistributeRoyaltyTokens(
                 spgNftCollection,
                 recipient,
                 ipMetadata,
                 licenseTermsData,
+                royaltyShares,
                 allowDuplicates
             );
 
         // Store custom fee if commercial license is included
-        bool hasCommercial = false;
-        for (uint i = 0; i < licenseTypes.length; i++) {
-            if (licenseTypes[i] == 0) {
-                hasCommercial = true;
-                break;
-            }
-        }
-
-        if (hasCommercial && customCommercialFee > 0) {
+        if (_hasCommercialLicense(licenseTypes) && customCommercialFee > 0) {
             customLicenseFees[ipId] = customCommercialFee;
-            emit CustomLicenseFeeSet(ipId, customCommercialFee);
         }
 
-        emit BookRegistered(ipId, tokenId, licenseTermsIds);
+        // Get the deployed royalty vault address for the event
+        // Note: RoyaltyModule.ipRoyaltyVaults(ipId) would return the vault address
+
+        emit BookRegistered(ipId, tokenId, licenseTermsIds, address(0)); // TODO: get actual vault address
     }
 
-    ///@notice Register a derivative work using direct licensing (user pays fees)
+    ///@notice Register a derivative work
+    ///@dev Users pay licensing fees directly to parent IP owners via LAP policy
     ///@param derivativeRecipient Recipient of the derivative IP Asset
     ///@param parentIpIds Array of parent IP Asset IDs this derivative is based on (Max 16 parents)
     ///@param licenseTermsIds Array of license terms IDs corresponding to each parent
@@ -214,7 +234,6 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         bool allowDuplicates
     ) external returns (address childIpId, uint256 tokenId) {
         require(spgNftCollection != address(0), "Collection not created");
-        require(msg.sender == owner(), "Only owner can register derivatives");
         require(
             parentIpIds.length == licenseTermsIds.length,
             "Arrays length mismatch"
@@ -233,7 +252,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
                 maxRevenueShare: maxRevenueShare
             });
 
-        // The user must have approved this contract to spend their tokens for fees
+        // User must have approved this contract to spend their tokens for fees
         // Fees are automatically collected by the DerivativeWorkflows contract
         (childIpId, tokenId) = derivativeWorkflows
             .mintAndRegisterIpAndMakeDerivative(
@@ -246,7 +265,92 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
 
         require(childIpId != address(0), "Derivative creation failed");
 
-        emit DerivativeCreated(childIpId, tokenId, parentIpIds[0]);
+        // Calculate total licensing fees paid (approximate)
+        uint256 totalFeesPaid = maxMintingFee; // This is user's max willingness to pay in case of parent IP changing fees during tx
+
+        emit DerivativeCreated(
+            childIpId,
+            tokenId,
+            parentIpIds[0],
+            totalFeesPaid
+        );
+    }
+
+    ///@notice Register derivative with integrated royalty distribution
+    ///@dev Alternative approach for derivatives that need custom royalty token distribution
+    ///@param derivativeRecipient Recipient of the derivative IP Asset
+    ///@param derivativeMetadata Metadata for the derivative IP Asset
+    ///@param derivativeData Data structure defining the derivative creation parameters
+    ///@param royaltyShares Information for royalty token distribution
+    ///@param allowDuplicates Whether to allow duplicate metadata
+    ///@return childIpId The ID of the newly created derivative IP Asset
+    ///@return tokenId The NFT token ID of the derivative
+    function registerDerivativeWithRoyalties(
+        address derivativeRecipient,
+        WorkflowStructs.IPMetadata calldata derivativeMetadata,
+        WorkflowStructs.MakeDerivative calldata derivativeData,
+        WorkflowStructs.RoyaltyShare[] calldata royaltyShares,
+        bool allowDuplicates
+    ) external returns (address childIpId, uint256 tokenId) {
+        require(spgNftCollection != address(0), "Collection not created");
+
+        // Validate royalty shares
+        uint32 totalShares = 0;
+        for (uint i = 0; i < royaltyShares.length; i++) {
+            totalShares += royaltyShares[i].percentage;
+        }
+        require(totalShares == 100_000_000, "Royalty shares must sum to 100%");
+
+        // Create derivative + distribute royalty tokens atomically
+        (childIpId, tokenId) = royaltyDistributionWorkflows
+            .mintAndRegisterIpAndMakeDerivativeAndDistributeRoyaltyTokens(
+                spgNftCollection,
+                derivativeRecipient,
+                derivativeMetadata,
+                derivativeData,
+                royaltyShares,
+                allowDuplicates
+            );
+
+        emit DerivativeCreated(
+            childIpId,
+            tokenId,
+            derivativeData.parentIpIds[0],
+            derivativeData.maxMintingFee
+        );
+    }
+
+    ///@notice Claim accumulated royalties for an IP asset
+    ///@dev Authors can claim their share of royalties from all derivative works
+    ///@param ipId The IP Asset ID
+    ///@param claimer The address claiming the royalties (must hold royalty tokens)
+    ///@param claimRevenueData Array of data structures defining which revenues to claim from
+    ///@return amountsClaimed Array of amounts claimed from each revenue source
+    function claimRoyalties(
+        address ipId,
+        address claimer,
+        WorkflowStructs.ClaimRevenueData[] calldata claimRevenueData
+    ) external returns (uint256[] memory amountsClaimed) {
+        // Anyone can trigger royalty claims (gas sponsor model)
+        // LAP policy automatically distributes to royalty token holders
+
+        amountsClaimed = royaltyWorkflows.claimAllRevenue(
+            ipId,
+            claimer,
+            claimRevenueData
+        );
+
+        emit RoyaltiesClaimed(ipId, claimer, amountsClaimed);
+    }
+
+    ///@notice Helper to check if commercial license is included
+    function _hasCommercialLicense(
+        uint8[] calldata licenseTypes
+    ) internal pure returns (bool) {
+        for (uint i = 0; i < licenseTypes.length; i++) {
+            if (licenseTypes[i] == 0) return true; // 0 = Commercial Remix
+        }
+        return false;
     }
 
     ///@notice Helper function to create license terms for multiple license types
@@ -279,7 +383,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
                 terms = PILFlavors.commercialRemix(
                     feeToUse,
                     royaltyToUse,
-                    royaltyPolicyAddress,
+                    royaltyPolicyAddress, // LAP policy
                     supportedCurrency
                 );
             } else {
@@ -317,8 +421,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         _unpause();
     }
 
-    // TODO: Add functions for:
-    // - Royalty payment and distribution. Include logic to pay a fee to the dApp
-    // - Claiming royalties
-    // - Setting PIL terms IDs after deployment
+    // TODO:
+    // - Review royalty payment to include platform fee 0.1%
+    // - Add sponsored gas mechanism for book registration and non-commercial derivative creation
 }
