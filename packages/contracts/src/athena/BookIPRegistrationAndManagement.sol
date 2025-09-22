@@ -385,7 +385,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     ///@notice Claim accumulated royalties for an IP asset
     ///@dev Authors can claim their share of royalties from all derivative works
     ///@param ipId The IP Asset ID
-    ///@param claimer The address claiming the royalties (must hold royalty tokens)
+    ///@param claimer The address claiming the royalties. Only royalty token holders can claim, and only for their proportional share.
     ///@param claimRevenueData Array of data structures defining which revenues to claim from
     ///@return amountsClaimed Array of amounts claimed from each revenue source
     function claimRoyalties(
