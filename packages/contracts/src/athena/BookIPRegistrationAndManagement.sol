@@ -9,6 +9,7 @@ import {IRegistrationWorkflows} from "@storyprotocol/periphery/interfaces/workfl
 import {IRoyaltyTokenDistributionWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IRoyaltyTokenDistributionWorkflows.sol";
 import {IDerivativeWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IDerivativeWorkflows.sol";
 import {IRoyaltyWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IRoyaltyWorkflows.sol";
+import {IRoyaltyModule} from "@storyprotocol/core/interfaces/modules/royalty/IRoyaltyModule.sol";
 import {WorkflowStructs} from "@storyprotocol/periphery/lib/WorkflowStructs.sol";
 import {PILTerms} from "@storyprotocol/core/interfaces/modules/licensing/IPILicenseTemplate.sol";
 import {Licensing} from "@storyprotocol/core/lib/Licensing.sol";
@@ -24,18 +25,22 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         public immutable royaltyDistributionWorkflows;
     IDerivativeWorkflows public immutable derivativeWorkflows;
     IRoyaltyWorkflows public immutable royaltyWorkflows;
+    IRoyaltyModule public immutable royaltyModule;
     address public spgNftCollection;
 
     // PIL Template and supported currency
     address public immutable pilTemplate;
     address public immutable supportedCurrency; // Wrapped $IP
-    address public immutable royaltyPolicyAddress; //LAP Policy
+    address public immutable royaltyPolicyAddress; // LAP Policy
 
-    // Whitelisting for authors (root IPs only)
+    // Whitelisting for authors (root IP assets only)
     mapping(address => bool) public authorizedAuthors;
 
     // Custom license fees (ipId => fee in wei)
     mapping(address => uint256) public customLicenseFees;
+
+    // App fee on tips and royalty payments (in basis points, e.g. 1000000 = 1%)
+    uint256 public appRoyaltyFeePercent = 1_000; // 0.1%
 
     // Events
     event BookCollectionCreated(address indexed collection);
@@ -57,12 +62,28 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         uint256[] amounts
     );
 
+    event TipPaid(
+        address indexed ipId,
+        address indexed tipper,
+        uint256 amount,
+        string message
+    );
+
+    event RoyaltySharePaid(
+        address indexed receiverIpId,
+        address indexed payerIpId,
+        address indexed payer,
+        uint256 amount,
+        string reason
+    );
+
     constructor(
         address initialOwner,
         address _registrationWorkflows,
         address _royaltyDistributionWorkflows,
         address _derivativeWorkflows,
         address _royaltyWorkflows,
+        address _royaltyModule,
         address _pilTemplate,
         address _supportedCurrency,
         address _royaltyPolicyAddress
@@ -84,6 +105,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
             _royaltyWorkflows != address(0),
             "Invalid RoyaltyWorkflows address"
         );
+        require(_royaltyModule != address(0), "Invalid RoyaltyModule address");
         require(_pilTemplate != address(0), "Invalid PIL template address");
         require(_supportedCurrency != address(0), "Invalid currency address");
         require(
@@ -97,12 +119,13 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         );
         derivativeWorkflows = IDerivativeWorkflows(_derivativeWorkflows);
         royaltyWorkflows = IRoyaltyWorkflows(_royaltyWorkflows);
+        royaltyModule = IRoyaltyModule(_royaltyModule);
         pilTemplate = _pilTemplate;
         supportedCurrency = _supportedCurrency;
         royaltyPolicyAddress = _royaltyPolicyAddress;
     }
 
-    ///@notice Creates the SPGNFT collection for books
+    ///@notice Creates the SPGNFT collection for this application
     ///@param spgNftInitParams Initialization parameters for the collection
     function createBookCollection(
         ISPGNFT.InitParams calldata spgNftInitParams
@@ -140,7 +163,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     ///@return ipId The IP Asset ID
     ///@return tokenId the NFT token ID
     ///@return licenseTermsIds The IDs of the license terms attached to the IP Asset
-    function registerBookWithSponsoredGas(
+    function registerSingleAuthorBook(
         address recipient,
         WorkflowStructs.IPMetadata calldata ipMetadata,
         uint8[] calldata licenseTypes,
@@ -165,9 +188,6 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
             licenseTypes.length > 0 && licenseTypes.length <= 3,
             "Invalid license types array"
         );
-
-        // TODO: Implement gas sponsoring logic here
-        // This could be done through meta-transactions or by the contract paying
 
         // Validate royalty shares sum to 100%
         uint32 totalShares = 0;
@@ -206,17 +226,18 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         }
 
         // Get the deployed royalty vault address for the event
-        // Note: RoyaltyModule.ipRoyaltyVaults(ipId) would return the vault address
+        address royaltyVault = royaltyModule.ipRoyaltyVaults(ipId);
 
-        emit BookRegistered(ipId, tokenId, licenseTermsIds, address(0)); // TODO: get actual vault address
+        emit BookRegistered(ipId, tokenId, licenseTermsIds, royaltyVault);
     }
 
-    ///@notice Register a derivative work
+    ///@notice Register a derivative work with simple royalty distribution
     ///@dev Users pay licensing fees directly to parent IP owners via LAP policy
     ///@param derivativeRecipient Recipient of the derivative IP Asset
     ///@param parentIpIds Array of parent IP Asset IDs this derivative is based on (Max 16 parents)
     ///@param licenseTermsIds Array of license terms IDs corresponding to each parent
     ///@param derivativeMetadata Metadata for the derivative IP Asset
+    ///@param royaltyShares Information for royalty token distribution
     ///@param maxMintingFee Maximum fee the user is willing to pay
     ///@param maxRts Maximum royalty tokens for external policies
     ///@param maxRevenueShare Maximum revenue share percentage
@@ -228,6 +249,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         address[] calldata parentIpIds,
         uint256[] calldata licenseTermsIds,
         WorkflowStructs.IPMetadata calldata derivativeMetadata,
+        WorkflowStructs.RoyaltyShare[] calldata royaltyShares,
         uint256 maxMintingFee,
         uint32 maxRts,
         uint32 maxRevenueShare,
@@ -240,68 +262,26 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         );
         require(parentIpIds.length > 0, "Must have at least one parent");
 
-        // Create the derivative data structure
-        WorkflowStructs.MakeDerivative memory derivativeData = WorkflowStructs
-            .MakeDerivative({
-                parentIpIds: parentIpIds,
-                licenseTermsIds: licenseTermsIds,
-                licenseTemplate: pilTemplate,
-                royaltyContext: "",
-                maxMintingFee: maxMintingFee,
-                maxRts: maxRts,
-                maxRevenueShare: maxRevenueShare
-            });
-
-        // User must have approved this contract to spend their tokens for fees
-        // Fees are automatically collected by the DerivativeWorkflows contract
-        (childIpId, tokenId) = derivativeWorkflows
-            .mintAndRegisterIpAndMakeDerivative(
-                spgNftCollection,
-                derivativeData,
-                derivativeMetadata,
-                derivativeRecipient,
-                allowDuplicates
-            );
-
-        require(childIpId != address(0), "Derivative creation failed");
-
-        // Calculate total licensing fees paid (approximate)
-        uint256 totalFeesPaid = maxMintingFee; // This is user's max willingness to pay in case of parent IP changing fees during tx
-
-        emit DerivativeCreated(
-            childIpId,
-            tokenId,
-            parentIpIds[0],
-            totalFeesPaid
-        );
-    }
-
-    ///@notice Register derivative with integrated royalty distribution
-    ///@dev Alternative approach for derivatives that need custom royalty token distribution
-    ///@param derivativeRecipient Recipient of the derivative IP Asset
-    ///@param derivativeMetadata Metadata for the derivative IP Asset
-    ///@param derivativeData Data structure defining the derivative creation parameters
-    ///@param royaltyShares Information for royalty token distribution
-    ///@param allowDuplicates Whether to allow duplicate metadata
-    ///@return childIpId The ID of the newly created derivative IP Asset
-    ///@return tokenId The NFT token ID of the derivative
-    function registerDerivativeWithRoyalties(
-        address derivativeRecipient,
-        WorkflowStructs.IPMetadata calldata derivativeMetadata,
-        WorkflowStructs.MakeDerivative calldata derivativeData,
-        WorkflowStructs.RoyaltyShare[] calldata royaltyShares,
-        bool allowDuplicates
-    ) external returns (address childIpId, uint256 tokenId) {
-        require(spgNftCollection != address(0), "Collection not created");
-
-        // Validate royalty shares
+        // Validate royalty shares sum to 100%
         uint32 totalShares = 0;
         for (uint i = 0; i < royaltyShares.length; i++) {
             totalShares += royaltyShares[i].percentage;
         }
         require(totalShares == 100_000_000, "Royalty shares must sum to 100%");
 
-        // Create derivative + distribute royalty tokens atomically
+        // Create the derivative data structure
+        WorkflowStructs.MakeDerivative memory derivativeData = WorkflowStructs
+            .MakeDerivative({
+                parentIpIds: parentIpIds,
+                licenseTermsIds: licenseTermsIds,
+                licenseTemplate: pilTemplate,
+                royaltyContext: "", // Empty for LAP policy
+                maxMintingFee: maxMintingFee,
+                maxRts: maxRts,
+                maxRevenueShare: maxRevenueShare
+            });
+
+        // Vault deployment + royalty token distribution + parent fee payments
         (childIpId, tokenId) = royaltyDistributionWorkflows
             .mintAndRegisterIpAndMakeDerivativeAndDistributeRoyaltyTokens(
                 spgNftCollection,
@@ -312,11 +292,94 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
                 allowDuplicates
             );
 
+        require(childIpId != address(0), "Derivative creation failed");
+
         emit DerivativeCreated(
             childIpId,
             tokenId,
-            derivativeData.parentIpIds[0],
-            derivativeData.maxMintingFee
+            parentIpIds[0],
+            maxMintingFee
+        );
+    }
+
+    ///@notice Register derivative with custom royalty distribution (split among multiple authors)
+    ///@dev For complex collaborations where multiple people split derivative royalties
+    ///@param derivativeRecipient Recipient of the derivative IP Asset
+    ///@param parentIpIds Array of parent IP Asset IDs this derivative is based on (Max 16 parents)
+    ///@param licenseTermsIds Array of license terms IDs corresponding to each parent
+    ///@param derivativeMetadata Metadata for the derivative IP Asset
+    ///@param authors Array of author addresses to receive royalty tokens
+    ///@param authorShares Array of shares corresponding to each author (in Story format, e.g. 5% = 5000000)
+    ///@param maxMintingFee Maximum fee the user is willing to pay
+    ///@param maxRts Maximum royalty tokens for external policies
+    ///@param maxRevenueShare Maximum revenue share percentage
+    ///@param allowDuplicates Whether to allow duplicate metadata
+    ///@return childIpId The ID of the newly created derivative IP Asset
+    ///@return tokenId The NFT token ID of the derivative
+    function registerCollaborativeDerivative(
+        address derivativeRecipient,
+        address[] calldata parentIpIds,
+        uint256[] calldata licenseTermsIds,
+        WorkflowStructs.IPMetadata calldata derivativeMetadata,
+        address[] calldata authors,
+        uint256[] calldata authorShares,
+        uint256 maxMintingFee,
+        uint32 maxRts,
+        uint32 maxRevenueShare,
+        bool allowDuplicates
+    ) external returns (address childIpId, uint256 tokenId) {
+        require(spgNftCollection != address(0), "Collection not created");
+        require(
+            parentIpIds.length == licenseTermsIds.length,
+            "Arrays length mismatch"
+        );
+        require(parentIpIds.length > 0, "Must have at least one parent");
+
+        // Split royalty shares among multiple authors
+        WorkflowStructs.RoyaltyShare[]
+            memory complexRoyaltyShares = new WorkflowStructs.RoyaltyShare[](
+                authors.length + 1
+            );
+        uint32 totalAuthorShare = 0;
+        for (uint i = 0; i < authors.length; i++) {
+            require(authors[i] != address(0), "Invalid author address");
+            require(authorShares[i] > 0, "Author share must be positive");
+            totalAuthorShare += uint32(authorShares[i]);
+            complexRoyaltyShares[i] = WorkflowStructs.RoyaltyShare({
+                recipient: authors[i],
+                percentage: uint32(authorShares[i])
+            });
+        }
+        require(totalAuthorShare < 100_000_000, "Total author share too high");
+
+        // Create derivative data structure
+        WorkflowStructs.MakeDerivative memory derivativeData = WorkflowStructs
+            .MakeDerivative({
+                parentIpIds: parentIpIds,
+                licenseTermsIds: licenseTermsIds,
+                licenseTemplate: pilTemplate,
+                royaltyContext: "", // Empty for LAP policy
+                maxMintingFee: maxMintingFee,
+                maxRts: maxRts,
+                maxRevenueShare: maxRevenueShare
+            });
+
+        // Create derivative with custom royalty token distribution
+        (childIpId, tokenId) = royaltyDistributionWorkflows
+            .mintAndRegisterIpAndMakeDerivativeAndDistributeRoyaltyTokens(
+                spgNftCollection,
+                derivativeRecipient,
+                derivativeMetadata,
+                derivativeData,
+                complexRoyaltyShares,
+                allowDuplicates
+            );
+
+        emit DerivativeCreated(
+            childIpId,
+            tokenId,
+            parentIpIds[0],
+            maxMintingFee
         );
     }
 
@@ -331,9 +394,6 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         address claimer,
         WorkflowStructs.ClaimRevenueData[] calldata claimRevenueData
     ) external returns (uint256[] memory amountsClaimed) {
-        // Anyone can trigger royalty claims (gas sponsor model)
-        // LAP policy automatically distributes to royalty token holders
-
         amountsClaimed = royaltyWorkflows.claimAllRevenue(
             ipId,
             claimer,
@@ -341,6 +401,68 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         );
 
         emit RoyaltiesClaimed(ipId, claimer, amountsClaimed);
+    }
+
+    ///@notice Pay royalties on-chain (for derivative owners acknowledging parent IP)
+    ///@param parentIpId The parent IP to pay royalties to
+    ///@param derivativeIpId The derivative that's paying (for tracking)
+    ///@param amount Amount to pay
+    ///@param reason Reason for payment ("quarterly royalties", "goodwill payment", etc.)
+    function payRoyaltyShare(
+        address parentIpId,
+        address derivativeIpId,
+        uint256 amount,
+        string calldata reason
+    ) external {
+        require(amount > 0, "Payment must be positive");
+        require(
+            IRoyaltyModule(royaltyModule).ipRoyaltyVaults(parentIpId) !=
+                address(0),
+            "Parent IP has no royalty vault"
+        );
+
+        IRoyaltyModule(royaltyModule).payRoyaltyOnBehalf(
+            parentIpId,
+            derivativeIpId,
+            supportedCurrency,
+            amount
+        );
+
+        emit RoyaltySharePaid(
+            parentIpId,
+            derivativeIpId,
+            msg.sender,
+            amount,
+            reason
+        );
+    }
+
+    ///@notice Pay tip directly to a root asset (book)
+    ///@param ipId The IP asset to tip
+    ///@param amount Amount to tip in supported currency
+    ///@param message Optional tip message
+    function payTip(
+        address ipId,
+        uint256 amount,
+        string calldata message
+    ) external {
+        require(amount > 0, "Tip must be positive");
+
+        // App takes small fee from tips too
+        uint256 appFee = (amount * appRoyaltyFeePercent) / 100_000_000;
+        uint256 tipAmount = amount - appFee;
+
+        // Pay tip directly to IP owner (bypasses royalty policies)
+        IERC20(supportedCurrency).transferFrom(msg.sender, ipId, tipAmount);
+
+        // Keep dApp fee
+        IERC20(supportedCurrency).transferFrom(
+            msg.sender,
+            address(this),
+            appFee
+        );
+
+        emit TipPaid(ipId, msg.sender, tipAmount, message);
     }
 
     ///@notice Helper to check if commercial license is included
