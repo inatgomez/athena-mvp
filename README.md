@@ -1,44 +1,60 @@
-# ATHENA MVP
+# ATHENA: KNOWLEDGE NETWORK
 
 **Project Status: In Progress**
 
-ATHENA is a Story Protocol-powered platform that reimagines how authors can make books freely available while increasing revenue through blockchain-enabled attribution and licensing mechanics. Instead of traditional paywalls, authors earn through automated royalty distribution when their work is legitimately remixed or referenced.
+ATHENA is a Story Protocol-powered platform enabling authors to register books as blockchain IP assets with automated royalty distribution, multi-author collaboration, and derivative work tracking.
 
-## Core Concept
+## Core Features
 
-**Make attribution more valuable than hiding sources** by:
+**Blockchain-Native Book Publishing**:
+- Register books as IP assets with customizable PIL (Programmable IP License) terms
+- Support for single and multi-author collaborations with automatic royalty splitting
+- Three licensing models: Commercial Remix, Non-Commercial Social Remixing, Creative Commons Attribution
 
-- Registering books as IP assets with customizable licensing terms
-- Enabling tracked attribution for derivative works at the chapter level
-- Automating royalty distribution through smart contracts
-- Creating discovery value through attribution graphs
+**Revenue Mechanisms**:
+- Automated royalty distribution when derivative works are created
+- Direct tip system for reader support
+- Custom licensing fees and royalty percentages per book
+- On-chain royalty payments with transparent attribution tracking
 
-## Technical Stack
+**Derivative Work Management**:
+- Support for complex derivative relationships (up to 16 parent works)
+- Automated licensing fee collection and distribution
+  
+### Smart Contracts
+- **BookIPRegistrationAndManagement.sol**: Core contract handling IP registration, licensing, and royalty distribution
+- **Story Protocol Integration**: Full PIL template support with custom terms
+- **Multi-Author Support**: Collaborative royalty token distribution
+- **Pausable & Ownable**: Security controls with whitelisted author registration
 
+### Stack
 - **Blockchain**: Story Protocol
+- **Smart Contracts**: Solidity ^0.8.26
 - **Frontend**: Next.js 14 with TypeScript
-- **Smart Contracts**: Solidity contracts integrated with Story Protocol
 - **Storage**: IPFS for content files
 - **Styling**: Tailwind CSS
-
-## Project Goals
-
-This is **pure R&D exploration**, not a commercial venture. I'm experimenting with whether blockchain-native attribution can:
-
-- Increase author revenue compared to traditional publishing
-- Encourage legitimate attribution over unauthorized copying
-- Create new discovery mechanisms through derivative relationships
-- Enable sustainable knowledge sharing ecosystems
+- **Currency**: Wrapped $IP token (Story's token)
 
 ## Development Status
 
-Currently in MVP design phase focusing on:
+**Current MVP Phase**:
+- ✅ Core Story Protocol integration
+- ✅ Multi-author royalty distribution
+- ✅ PIL template customization for books
+- ✅ Derivative work registration with parent tracking
+- 🔄 Frontend integration with contract functions
+- 🔄 IPFS content storage implementation
+- ⏳ IPFi implementation to support knowledge creation
+- ⏳ Dispute module implementation to enforce copyright protection
 
-- Story Protocol integration architecture
-- PIL template customization for books
-- Chapter-level attribution metadata system
-- Basic author and remixer user flows
+## Project Goals
+
+This is **pure R&D exploration** investigating whether blockchain-native attribution can:
+- Enable sustainable knowledge creation revenue sharing
+- Create transparent derivative work relationships
+- Reduce unauthorized copying through attribution incentives
+- Build discovery mechanisms through on-chain IP relationships
 
 ---
 
-_This project explores technical possibilities in intellectual property management and is not intended for production use._
+_This project explores technical possibilities in decentralized intellectual property management and is not intended for production use._
