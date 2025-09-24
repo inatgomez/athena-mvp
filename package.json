@@ -1,7 +1,7 @@
 {
   "name": "athena-mvp",
   "version": "1.0.0",
-  "description": "Athena dApp monorepo",
+  "description": "Athena App monorepo",
   "private": true,
   "workspaces": [
     "apps/*",
