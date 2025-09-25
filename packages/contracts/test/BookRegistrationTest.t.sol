@@ -22,7 +22,7 @@ import {BookIPRegistrationAndManagement} from "../src/BookIPRegistrationAndManag
 
 contract BookRegistrationTest is Test {
     // Test accounts
-    address internal owner = address(0x0431);
+    address internal owner = address(0xbeefface);
     address internal alice = address(0xa11ce);
     address internal bob = address(0xb0b);
     address internal carol = address(0xca501);
