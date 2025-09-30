@@ -447,81 +447,149 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         }
     }
 
-    ///@notice Helper to check if commercial license is included
-    function _hasCommercialLicense(
-        uint8[] calldata licenseTypes
-    ) internal pure returns (bool) {
-        for (uint i = 0; i < licenseTypes.length; i++) {
-            if (licenseTypes[i] == 0) return true; // 0 = Commercial Remix
+    // INTERNAL HELPERS
+
+    ///@dev Processes multiple authors and validates shares
+    ///@param authors Array of author addresses
+    ///@param authorShares Array of share percentages
+    ///@return Array of RoyaltyShare structs
+    function _processMultipleAuthors(
+        address[] calldata authors,
+        uint256[] calldata authorShares
+    ) internal pure returns (WorkflowStructs.RoyaltyShare[] memory) {
+        uint256 numAuthors = authors.length;
+
+        if (numAuthors != authorShares.length) revert InvalidAuthorData();
+        if (numAuthors > MAX_COLLABORATORS)
+            revert TooManyCollaborators(numAuthors, MAX_COLLABORATORS);
+
+        WorkflowStructs.RoyaltyShare[]
+            memory shares = new WorkflowStructs.RoyaltyShare[](numAuthors);
+        uint32 totalShare;
+
+        unchecked {
+            for (uint256 i = 0; i < numAuthors; ++i) {
+                if (authors[i] == address(0)) revert InvalidAddress("author");
+                if (authorShares[i] == 0) revert InvalidAmount();
+
+                uint32 share = uint32(authorShares[i]);
+                totalShare += share;
+
+                shares[i] = WorkflowStructs.RoyaltyShare({
+                    recipient: authors[i],
+                    percentage: share
+                });
+            }
         }
-        return false;
+
+        if (totalShare != PERCENTAGE_SCALE) revert InvalidRoyaltyShares();
+
+        return shares;
     }
 
-    ///@notice Helper function to create license terms for multiple license types
-    ///@param licenseTypes Array of license types
-    ///@param customFee Custom fee for commercial licenses
-    ///@param customRoyalty Custom royalty share for commercial licenses (in Story format: 5% = 5000000)
-    function _getMultipleLicenseTerms(
+    ///@dev Validates that royalty shares sum to 100%
+    ///@param royaltyShares Array of shares to validate
+    function _validateRoyaltySharesSum(
+        WorkflowStructs.RoyaltyShare[] memory royaltyShares
+    ) internal pure {
+        uint32 totalShares;
+
+        unchecked {
+            for (uint256 i = 0; i < royaltyShares.length; ++i) {
+                totalShares += royaltyShares[i].percentage;
+            }
+        }
+
+        if (totalShares != PERCENTAGE_SCALE) revert InvalidRoyaltyShares();
+    }
+
+    ///@dev Constructs license terms data from license types
+    ///@param licenseTypes Array of license type IDs
+    ///@param customCommercialFee Custom fee for commercial licenses
+    ///@param customLicensorRoyaltyShare Custom royalty percentage
+    ///@return Array of license terms data structs
+    function _buildLicenseTermsData(
         uint8[] calldata licenseTypes,
-        uint256 customFee,
-        uint32 customRoyalty
+        uint256 customCommercialFee,
+        uint32 customLicensorRoyaltyShare
     ) internal returns (WorkflowStructs.LicenseTermsData[] memory) {
+        uint256 numLicenses = licenseTypes.length;
         WorkflowStructs.LicenseTermsData[]
             memory termsData = new WorkflowStructs.LicenseTermsData[](
-                licenseTypes.length
+                numLicenses
             );
 
-        for (uint i = 0; i < licenseTypes.length; i++) {
-            PILTerms memory terms;
-
-            if (licenseTypes[i] == 1) {
-                // Non-Commercial Social Remixing
-                terms = PILFlavors.nonCommercialSocialRemixing();
-            } else if (licenseTypes[i] == 0) {
-                // Commercial Remix
-                uint256 feeToUse = customFee > 0 ? customFee : 10 * 10 ** 18; // Default $10
-                uint32 royaltyToUse = customRoyalty > 0
-                    ? customRoyalty
-                    : 5000000; // Default 5%
-
-                terms = PILFlavors.commercialRemix(
-                    feeToUse,
-                    royaltyToUse,
-                    royaltyPolicyAddress, // LAP policy
-                    supportedCurrency
-                );
-            } else {
-                // Creative Commons Attribution
-                terms = PILFlavors.creativeCommonsAttribution(
-                    royaltyPolicyAddress,
-                    supportedCurrency
-                );
-            }
-
-            termsData[i] = WorkflowStructs.LicenseTermsData({
-                terms: terms,
-                licensingConfig: Licensing.LicensingConfig({
-                    isSet: false,
-                    mintingFee: 0,
-                    licensingHook: address(0),
-                    hookData: "",
-                    commercialRevShare: 0,
-                    disabled: false,
-                    expectMinimumGroupRewardShare: 0,
-                    expectGroupRewardPool: address(0)
-                })
+        // Empty licensing config (Story Protocol defaults)
+        Licensing.LicensingConfig memory emptyConfig = Licensing
+            .LicensingConfig({
+                isSet: false,
+                mintingFee: 0,
+                licensingHook: address(0),
+                hookData: "",
+                commercialRevShare: 0,
+                disabled: false,
+                expectMinimumGroupRewardShare: 0,
+                expectGroupRewardPool: address(0)
             });
+
+        unchecked {
+            for (uint256 i = 0; i < numLicenses; ++i) {
+                PILTerms memory terms;
+
+                if (licenseTypes[i] == 0) {
+                    // Commercial Remix
+                    uint256 fee = customCommercialFee > 0
+                        ? customCommercialFee
+                        : DEFAULT_COMMERCIAL_FEE;
+                    uint32 royalty = customLicensorRoyaltyShare > 0
+                        ? customLicensorRoyaltyShare
+                        : DEFAULT_COMMERCIAL_ROYALTY;
+
+                    terms = PILFlavors.commercialRemix(
+                        fee,
+                        royalty,
+                        royaltyPolicyAddress,
+                        supportedCurrency
+                    );
+                } else if (licenseTypes[i] == 1) {
+                    // Non-Commercial Social Remixing
+                    terms = PILFlavors.nonCommercialSocialRemixing();
+                } else {
+                    // Creative Commons Attribution (CC-BY)
+                    terms = PILFlavors.creativeCommonsAttribution(
+                        royaltyPolicyAddress,
+                        supportedCurrency
+                    );
+                }
+
+                termsData[i] = WorkflowStructs.LicenseTermsData({
+                    terms: terms,
+                    licensingConfig: emptyConfig
+                });
+            }
         }
 
         return termsData;
     }
 
-    ///@notice Emergency pause function
+    // Pausable controls
+
     function pause() external onlyOwner {
         _pause();
     }
 
     function unpause() external onlyOwner {
         _unpause();
+    }
+
+    // View Functions
+
+    ///@notice Check if an IP has a royalty vault deployed
+    ///@param ipId The IP Asset ID
+    ///@return vault The royalty vault address (address(0) if not deployed)
+    function getIpRoyaltyVault(
+        address ipId
+    ) external view returns (address vault) {
+        return royaltyModule.ipRoyaltyVaults(ipId);
     }
 }
