@@ -300,133 +300,105 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         uint32 maxRts,
         uint32 maxRevenueShare,
         bool allowDuplicates
-    ) external returns (address childIpId, uint256 tokenId) {
-        require(spgNftCollection != address(0), "Collection not created");
-        require(
-            parentIpIds.length == licenseTermsIds.length,
-            "Arrays length mismatch"
-        );
-        require(parentIpIds.length > 0, "Must have at least one parent");
+    ) external whenNotPaused returns (address childIpId, uint256 tokenId) {
+        if (spgNftCollection == address(0)) revert CollectionNotCreated();
+        if (parentIpIds.length != licenseTermsIds.length)
+            revert InvalidAuthorData();
+        if (parentIpIds.length == 0 || parentIpIds.length > MAX_COLLABORATORS) {
+            revert TooManyCollaborators(parentIpIds.length, MAX_COLLABORATORS);
+        }
 
-        // Create derivative data structure
+        // Derivative data construction
         WorkflowStructs.MakeDerivative memory derivativeData = WorkflowStructs
             .MakeDerivative({
                 parentIpIds: parentIpIds,
                 licenseTermsIds: licenseTermsIds,
                 licenseTemplate: pilTemplate,
-                royaltyContext: "", // Empty for LAP policy
+                royaltyContext: "", // Empty for LAP
                 maxMintingFee: maxMintingFee,
                 maxRts: maxRts,
                 maxRevenueShare: maxRevenueShare
             });
 
+        // Multi-author handling
+        WorkflowStructs.RoyaltyShare[] memory finalRoyaltyShares;
+
         if (authors.length > 1) {
-            // Split royalty shares among multiple authors
-            WorkflowStructs.RoyaltyShare[]
-                memory complexRoyaltyShares = new WorkflowStructs.RoyaltyShare[](
-                    authors.length + 1
-                );
-            uint32 totalAuthorShare = 0;
-            for (uint i = 0; i < authors.length; i++) {
-                require(authors[i] != address(0), "Invalid author address");
-                require(authorShares[i] > 0, "Author share must be positive");
-                totalAuthorShare += uint32(authorShares[i]);
-                complexRoyaltyShares[i] = WorkflowStructs.RoyaltyShare({
-                    recipient: authors[i],
-                    percentage: uint32(authorShares[i])
-                });
-            }
-            require(
-                totalAuthorShare <= 100_000_000,
-                "Total author share too high"
-            );
-
-            // Create derivative with custom royalty token distribution for multiple authors
-            (childIpId, tokenId) = royaltyDistributionWorkflows
-                .mintAndRegisterIpAndMakeDerivativeAndDistributeRoyaltyTokens(
-                    spgNftCollection,
-                    derivativeRecipient,
-                    derivativeMetadata,
-                    derivativeData,
-                    complexRoyaltyShares,
-                    allowDuplicates
-                );
+            finalRoyaltyShares = _processMultipleAuthors(authors, authorShares);
+        } else if (authors.length == 1) {
+            finalRoyaltyShares = new WorkflowStructs.RoyaltyShare[](1);
+            finalRoyaltyShares[0] = WorkflowStructs.RoyaltyShare({
+                recipient: authors[0],
+                percentage: PERCENTAGE_SCALE
+            });
         } else {
-            // Validate royalty shares sum to 100%
-            uint32 totalShares = 0;
-            for (uint i = 0; i < royaltyShares.length; i++) {
-                totalShares += royaltyShares[i].percentage;
-            }
-            require(
-                totalShares == 100_000_000,
-                "Royalty shares must sum to 100"
-            );
-
-            // Create derivative with custom royalty token distribution for single author
-            (childIpId, tokenId) = royaltyDistributionWorkflows
-                .mintAndRegisterIpAndMakeDerivativeAndDistributeRoyaltyTokens(
-                    spgNftCollection,
-                    derivativeRecipient,
-                    derivativeMetadata,
-                    derivativeData,
-                    royaltyShares,
-                    allowDuplicates
-                );
+            _validateRoyaltySharesSum(royaltyShares);
+            finalRoyaltyShares = royaltyShares;
         }
 
-        emit DerivativeCreated(
-            childIpId,
-            tokenId,
-            parentIpIds[0],
-            maxMintingFee
-        );
+        // Story Protocol Derivative Registration
+        (childIpId, tokenId) = royaltyDistributionWorkflows
+            .mintAndRegisterIpAndMakeDerivativeAndDistributeRoyaltyTokens(
+                spgNftCollection,
+                derivativeRecipient,
+                derivativeMetadata,
+                derivativeData,
+                finalRoyaltyShares,
+                allowDuplicates
+            );
+
+        emit DerivativeCreated(childIpId, tokenId, parentIpIds, maxMintingFee);
     }
 
     ///@notice Claim accumulated royalties for an IP asset
-    ///@dev Authors can claim their share of royalties from all derivative works
+    ///@dev Only royalty token holders can claim proportional shares
     ///@param ipId The IP Asset ID
-    ///@param claimer The address claiming the royalties. Only royalty token holders can claim, and only for their proportional share.
-    ///@param claimRevenueData Array of data structures defining which revenues to claim from
-    ///@return amountsClaimed Array of amounts claimed from each revenue source
+    ///@param claimer The claiming address
+    ///@param claimRevenueData Revenue sources to claim from
+    ///@return amountsClaimed Amounts claimed per currency
     function claimRoyalties(
         address ipId,
         address claimer,
         WorkflowStructs.ClaimRevenueData[] calldata claimRevenueData
-    ) external returns (uint256[] memory amountsClaimed) {
+    ) external whenNotPaused returns (uint256[] memory amountsClaimed) {
+        if (claimRevenueData.length == 0) revert InvalidAmount();
+
         amountsClaimed = royaltyWorkflows.claimAllRevenue(
             ipId,
             claimer,
             claimRevenueData
         );
 
-        emit RoyaltiesClaimed(ipId, claimer, amountsClaimed);
+        // Extract currency tokens for event
+        address[] memory currencyTokens = new address[](
+            claimRevenueData.length
+        );
+        unchecked {
+            for (uint256 i = 0; i < claimRevenueData.length; ++i) {
+                currencyTokens[i] = claimRevenueData[i].currencyToken;
+            }
+        }
+
+        emit RoyaltiesClaimed(ipId, claimer, currencyTokens, amountsClaimed);
     }
 
-    ///@notice Pay royalties on-chain (for derivative owners acknowledging parent IP)
-    ///@param parentIpId The parent IP to pay royalties to
-    ///@param derivativeIpId The derivative that's paying (for tracking)
-    ///@param amount Amount to pay
-    ///@param reason Reason for payment ("quarterly royalties", "goodwill payment", etc.)
+    ///@notice Pay royalties on-chain to parent IP
+    ///@dev Follows checks-effects-interactions pattern
+    ///@param parentIpId Parent IP to receive royalties
+    ///@param derivativeIpId Derivative paying royalties
+    ///@param amount Payment amount
+    ///@param reason Payment description
     function payRoyaltyShare(
         address parentIpId,
         address derivativeIpId,
         uint256 amount,
         string calldata reason
-    ) external {
-        require(amount > 0, "Payment must be positive");
-        require(
-            IRoyaltyModule(royaltyModule).ipRoyaltyVaults(parentIpId) !=
-                address(0),
-            "Parent IP has no royalty vault"
-        );
+    ) external whenNotPaused {
+        if (amount == 0) revert InvalidAmount();
+        if (royaltyModule.ipRoyaltyVaults(parentIpId) == address(0))
+            revert NoRoyaltyVault();
 
-        IRoyaltyModule(royaltyModule).payRoyaltyOnBehalf(
-            parentIpId,
-            derivativeIpId,
-            supportedCurrency,
-            amount
-        );
-
+        // Emit event before external calls (CEI pattern)
         emit RoyaltySharePaid(
             parentIpId,
             derivativeIpId,
@@ -434,34 +406,45 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
             amount,
             reason
         );
+
+        // External call last
+        royaltyModule.payRoyaltyOnBehalf(
+            parentIpId,
+            derivativeIpId,
+            supportedCurrency,
+            amount
+        );
     }
 
-    ///@notice Pay tip directly to a root asset (book)
-    ///@param ipId The IP asset to tip
-    ///@param amount Amount to tip in supported currency
+    ///@notice Pay tip directly to root IP
+    ///@dev Implements checks-effects-interactions pattern for security
+    //@param ipId IP to receive tip
+    ///@param amount Tip amount (platform fee deducted)
     ///@param message Optional tip message
     function payTip(
         address ipId,
         uint256 amount,
         string calldata message
-    ) external {
-        require(amount > 0, "Tip must be positive");
+    ) external whenNotPaused {
+        if (amount == 0) revert InvalidAmount();
 
-        // App takes small fee from tips too
-        uint256 appFee = (amount * appRoyaltyFeePercent) / 100_000_000;
+        // Calculations (checks)
+        uint256 appFee = (amount * appRoyaltyFeePercent) / PERCENTAGE_SCALE;
         uint256 tipAmount = amount - appFee;
 
-        // Pay tip directly to IP owner (bypasses royalty policies)
-        IERC20(supportedCurrency).transferFrom(msg.sender, ipId, tipAmount);
+        // Effects
+        emit TipPaid(ipId, msg.sender, tipAmount, appFee, message);
 
-        // Keep dApp fee
-        IERC20(supportedCurrency).transferFrom(
-            msg.sender,
-            address(this),
-            appFee
-        );
-
-        emit TipPaid(ipId, msg.sender, tipAmount, message);
+        // Interactions
+        // SafeERC20 prevents reentrancy via return value checks
+        IERC20(supportedCurrency).safeTransferFrom(msg.sender, ipId, tipAmount);
+        if (appFee > 0) {
+            IERC20(supportedCurrency).safeTransferFrom(
+                msg.sender,
+                address(this),
+                appFee
+            );
+        }
     }
 
     ///@notice Helper to check if commercial license is included
