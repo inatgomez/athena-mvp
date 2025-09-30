@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ISPGNFT} from "@storyprotocol/periphery/interfaces/ISPGNFT.sol";
 import {IRegistrationWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IRegistrationWorkflows.sol";
 import {IRoyaltyTokenDistributionWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IRoyaltyTokenDistributionWorkflows.sol";
@@ -19,6 +20,7 @@ import {PILFlavors} from "@storyprotocol/core/lib/PILFlavors.sol";
 ///@notice Gateway contract for registering books as IP on Story Protocol with full royalty management.
 
 contract BookIPRegistrationAndManagement is Ownable, Pausable {
+    using SafeERC20 for IERC20;
     // State variables
     IRegistrationWorkflows public immutable registrationWorkflows;
     IRoyaltyTokenDistributionWorkflows
@@ -33,14 +35,26 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     address public immutable supportedCurrency; // Wrapped $IP
     address public immutable royaltyPolicyAddress; // LAP Policy
 
-    // Whitelisting for authors (root IP assets only)
+    /// @notice Whitelisted authors (only they can register books)
     mapping(address => bool) public authorizedAuthors;
 
     // Custom license fees (ipId => fee in wei)
     mapping(address => uint256) public customLicenseFees;
 
-    // App fee on tips and royalty payments (in basis points, e.g. 1000000 = 1%)
-    uint256 public appRoyaltyFeePercent = 1_000; // 0.1%
+    /// @notice Platform fee on tips/royalty payments (basis points: 1000 = 0.1%)
+    uint256 public appRoyaltyFeePercent;
+
+    /// @dev Story Protocol uses 8 decimals for percentages (100_000_000 = 100%)
+    uint32 private constant PERCENTAGE_SCALE = 100_000_000;
+
+    /// @dev Default commercial remix license fee ($10 in 18 decimals)
+    uint256 private constant DEFAULT_COMMERCIAL_FEE = 10 * 10 ** 18;
+
+    /// @dev Default commercial remix royalty share (5% in Story format)
+    uint32 private constant DEFAULT_COMMERCIAL_ROYALTY = 5_000_000;
+
+    /// @dev Maximum number of collaborators (gas optimization threshold)
+    uint256 private constant MAX_COLLABORATORS = 16; // Story Protocol limit for parent IPs
 
     // Events
     event BookCollectionCreated(address indexed collection);
@@ -48,24 +62,27 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         address indexed ipId,
         uint256 indexed tokenId,
         uint256[] indexed licenseTerms,
-        address royaltyVault
+        address royaltyVault,
+        uint256 numberOfAuthors
     );
     event DerivativeCreated(
         address indexed childIpId,
         uint256 indexed tokenId,
-        address indexed parentIpId,
-        uint256 licensingFeesPaid
+        address[] parentIpIds,
+        uint256 totalLicensingFees
     );
     event RoyaltiesClaimed(
         address indexed ipId,
         address indexed claimer,
+        address[] currencyTokens,
         uint256[] amounts
     );
 
     event TipPaid(
         address indexed ipId,
         address indexed tipper,
-        uint256 amount,
+        uint256 tipAmount,
+        uint256 platformFee,
         string message
     );
 
@@ -76,6 +93,21 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         uint256 amount,
         string reason
     );
+
+    event AppFeeUpdated(uint256 oldFee, uint256 newFee);
+
+    // ERRORS (Gas-Efficient Custom Errors)
+
+    error InvalidAddress(string paramName);
+    error CollectionAlreadyCreated();
+    error CollectionNotCreated();
+    error Unauthorized();
+    error InvalidLicenseTypes();
+    error InvalidAuthorData();
+    error InvalidRoyaltyShares();
+    error InvalidAmount();
+    error NoRoyaltyVault();
+    error TooManyCollaborators(uint256 provided, uint256 max);
 
     constructor(
         address initialOwner,
@@ -155,7 +187,7 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     ///@dev Uses royalty distribution workflows for atomic IP+license+royalty setup
     ///@param recipient The recipient of the IP Asset (the book manager/author)
     ///@param ipMetadata Metadata for the IP Asset (the book)
-    ///@param licenseTypes Array of license types to attach (0: Commercial Remix, 1: Non-Commercial Remix, 2: Creative Commons)
+    ///@param licenseTypes Array of license types to attach (0: Commercial Remix, 1: Non-Commercial Remix, 2: Creative Commons). They are not the same as license terms ids.
     ///@param customCommercialFee Custom fee for commercial license (only used if licenseType == 1)
     ///@param customLicensorRoyaltyShare Custom royalty share percentage when a commercial license is included
     ///@param royaltyShares Information for royalty token distribution
@@ -541,8 +573,4 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     function unpause() external onlyOwner {
         _unpause();
     }
-
-    // TODO:
-    // - Review royalty payment to include platform fee 0.1%
-    // - Add sponsored gas mechanism for book registration and non-commercial derivative creation
 }
