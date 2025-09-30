@@ -28,18 +28,14 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     IDerivativeWorkflows public immutable derivativeWorkflows;
     IRoyaltyWorkflows public immutable royaltyWorkflows;
     IRoyaltyModule public immutable royaltyModule;
-    address public spgNftCollection;
-
-    // PIL Template and supported currency
     address public immutable pilTemplate;
     address public immutable supportedCurrency; // Wrapped $IP
     address public immutable royaltyPolicyAddress; // LAP Policy
 
+    address public spgNftCollection;
+
     /// @notice Whitelisted authors (only they can register books)
     mapping(address => bool) public authorizedAuthors;
-
-    // Custom license fees (ipId => fee in wei)
-    mapping(address => uint256) public customLicenseFees;
 
     /// @notice Platform fee on tips/royalty payments (basis points: 1000 = 0.1%)
     uint256 public appRoyaltyFeePercent;
@@ -120,30 +116,22 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         address _supportedCurrency,
         address _royaltyPolicyAddress
     ) Ownable(initialOwner) {
-        require(initialOwner != address(0), "Owner cannot be zero address");
-        require(
-            _registrationWorkflows != address(0),
-            "Invalid RegistrationWorkflows address"
-        );
-        require(
-            _royaltyDistributionWorkflows != address(0),
-            "Invalid RoyaltyDistributionWorkflows address"
-        );
-        require(
-            _derivativeWorkflows != address(0),
-            "Invalid DerivativeWorkflows address"
-        );
-        require(
-            _royaltyWorkflows != address(0),
-            "Invalid RoyaltyWorkflows address"
-        );
-        require(_royaltyModule != address(0), "Invalid RoyaltyModule address");
-        require(_pilTemplate != address(0), "Invalid PIL template address");
-        require(_supportedCurrency != address(0), "Invalid currency address");
-        require(
-            _royaltyPolicyAddress != address(0),
-            "Invalid royalty policy address"
-        );
+        if (initialOwner == address(0)) revert InvalidAddress("initialOwner");
+        if (_registrationWorkflows == address(0))
+            revert InvalidAddress("registrationWorkflows");
+        if (_royaltyDistributionWorkflows == address(0))
+            revert InvalidAddress("royaltyDistributionWorkflows");
+        if (_derivativeWorkflows == address(0))
+            revert InvalidAddress("derivativeWorkflows");
+        if (_royaltyWorkflows == address(0))
+            revert InvalidAddress("royaltyWorkflows");
+        if (_royaltyModule == address(0))
+            revert InvalidAddress("royaltyModule");
+        if (_pilTemplate == address(0)) revert InvalidAddress("pilTemplate");
+        if (_supportedCurrency == address(0))
+            revert InvalidAddress("supportedCurrency");
+        if (_royaltyPolicyAddress == address(0))
+            revert InvalidAddress("royaltyPolicyAddress");
 
         registrationWorkflows = IRegistrationWorkflows(_registrationWorkflows);
         royaltyDistributionWorkflows = IRoyaltyTokenDistributionWorkflows(
@@ -155,6 +143,8 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         pilTemplate = _pilTemplate;
         supportedCurrency = _supportedCurrency;
         royaltyPolicyAddress = _royaltyPolicyAddress;
+
+        appRoyaltyFeePercent = 1_000_000; // 1%
     }
 
     ///@notice Creates the SPGNFT collection for this application
@@ -162,13 +152,11 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     function createBookCollection(
         ISPGNFT.InitParams calldata spgNftInitParams
     ) external onlyOwner whenNotPaused {
-        require(spgNftCollection == address(0), "Collection already created");
-        require(bytes(spgNftInitParams.name).length > 0, "Name required");
-        require(spgNftInitParams.maxSupply > 0, "Invalid max supply");
-        require(
-            spgNftInitParams.owner == address(this),
-            "Owner must be this contract"
-        );
+        if (spgNftCollection != address(0)) revert CollectionAlreadyCreated();
+        if (bytes(spgNftInitParams.name).length == 0)
+            revert InvalidAddress("name");
+        if (spgNftInitParams.maxSupply == 0) revert InvalidAmount();
+        if (spgNftInitParams.owner != address(this)) revert Unauthorized();
 
         spgNftCollection = registrationWorkflows.createCollection(
             spgNftInitParams
@@ -183,20 +171,29 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         authorizedAuthors[author] = authorized;
     }
 
-    ///@notice Register a book as root IP asset with royalty tokens distribution
-    ///@dev Uses royalty distribution workflows for atomic IP+license+royalty setup
-    ///@param recipient The recipient of the IP Asset (the book manager/author)
+    ///@notice Update platform fee percentage
+    ///@param newFeePercent New fee in Story format (1_000_000 = 1%)
+    function setAppFee(uint256 newFeePercent) external onlyOwner {
+        if (newFeePercent > 10_000_000) revert InvalidAmount(); // Max 10%
+        uint256 oldFee = appRoyaltyFeePercent;
+        appRoyaltyFeePercent = newFeePercent;
+        emit AppFeeUpdated(oldFee, newFeePercent);
+    }
+
+    ///@notice Register a book as root IP asset with royalty token distribution
+    ///@dev Supports both single and multiple authors with automatic share calculation
+    ///@param recipient The recipient of the NFT (typically the main atuhor)
     ///@param ipMetadata Metadata for the IP Asset (the book)
-    ///@param licenseTypes Array of license types to attach (0: Commercial Remix, 1: Non-Commercial Remix, 2: Creative Commons). They are not the same as license terms ids.
-    ///@param customCommercialFee Custom fee for commercial license (only used if licenseType == 1)
-    ///@param customLicensorRoyaltyShare Custom royalty share percentage when a commercial license is included
-    ///@param royaltyShares Information for royalty token distribution
-    ///@param authors Array of author addresses to receive royalty tokens (for collaborative works)
-    ///@param authorShares Array of shares corresponding to each author
+    ///@param licenseTypes Array of license types to attach (0: Commercial Remix, 1: Non-Commercial Remix, 2: Creative Commons)
+    ///@param customCommercialFee Custom fee for commercial license (0 = use default)
+    ///@param customLicensorRoyaltyShare Custom royalty share for commercial license (0 = use default)
+    ///@param royaltyShares Royalty distribution for single author (ignored if authors.length > 1)
+    ///@param authors Array of author addresses
+    ///@param authorShares Array of shares for each author (must sum to 100_000_000)
     ///@param allowDuplicates Whether to allow duplicate metadata
-    ///@return ipId The IP Asset ID
+    ///@return ipId The registered IP Asset ID
     ///@return tokenId the NFT token ID
-    ///@return licenseTermsIds The IDs of the license terms attached to the IP Asset
+    ///@return licenseTermsIds The attached license term IDs
     function registerBook(
         address recipient,
         WorkflowStructs.IPMetadata calldata ipMetadata,
@@ -209,118 +206,89 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
         bool allowDuplicates
     )
         external
+        whenNotPaused
         returns (
             address ipId,
             uint256 tokenId,
             uint256[] memory licenseTermsIds
         )
     {
-        require(spgNftCollection != address(0), "Collection not created");
-        require(
-            authorizedAuthors[msg.sender] || msg.sender == owner(),
-            "Not authorized to register books"
-        );
-        require(
-            licenseTypes.length > 0 && licenseTypes.length <= 3,
-            "Invalid license types array"
-        );
+        if (spgNftCollection == address(0)) revert CollectionNotCreated();
+        if (!authorizedAuthors[msg.sender] && msg.sender != owner())
+            revert Unauthorized();
+        if (licenseTypes.length == 0 || licenseTypes.length > 3)
+            revert InvalidLicenseTypes();
 
-        // Validate all license types
-        for (uint i = 0; i < licenseTypes.length; i++) {
-            require(licenseTypes[i] <= 2, "Invalid license type");
+        // Validate license types
+        for (uint256 i = 0; i < licenseTypes.length; ++i) {
+            if (licenseTypes[i] > 2) revert InvalidLicenseTypes();
         }
 
-        // Get license terms for all requested types
+        // License Terms Construction
         WorkflowStructs.LicenseTermsData[]
-            memory licenseTermsData = _getMultipleLicenseTerms(
+            memory licenseTermsData = _buildLicenseTermsData(
                 licenseTypes,
                 customCommercialFee,
                 customLicensorRoyaltyShare
             );
 
-        // If multiple authors, split royalty shares among them
+        // Multi-author handling
+        WorkflowStructs.RoyaltyShare[] memory finalRoyaltyShares;
+
         if (authors.length > 1) {
-            // Create new royalty shares struct for multiple authors
-            WorkflowStructs.RoyaltyShare[]
-                memory complexRoyaltyShares = new WorkflowStructs.RoyaltyShare[](
-                    authors.length + 1
-                );
-
-            uint32 totalAuthorShare = 0;
-            for (uint i = 0; i < authors.length; i++) {
-                require(authors[i] != address(0), "Invalid author address");
-                require(authorShares[i] > 0, "Author share must be positive");
-                totalAuthorShare += uint32(authorShares[i]);
-                complexRoyaltyShares[i] = WorkflowStructs.RoyaltyShare({
-                    recipient: authors[i],
-                    percentage: uint32(authorShares[i])
-                });
-            }
-            require(
-                totalAuthorShare <= 100_000_000,
-                "Total author share too high"
-            );
-
-            // Mint + Register + Attach Licenses + Deploy Vault + Distribute Royalty Tokens for multiple authors
-            (ipId, tokenId, licenseTermsIds) = royaltyDistributionWorkflows
-                .mintAndRegisterIpAndAttachPILTermsAndDistributeRoyaltyTokens(
-                    spgNftCollection,
-                    recipient,
-                    ipMetadata,
-                    licenseTermsData,
-                    complexRoyaltyShares,
-                    allowDuplicates
-                );
+            // Multiple authors: process and validate shares
+            finalRoyaltyShares = _processMultipleAuthors(authors, authorShares);
+        } else if (authors.length == 1) {
+            // Single author via authors array: create simple share
+            finalRoyaltyShares = new WorkflowStructs.RoyaltyShare[](1);
+            finalRoyaltyShares[0] = WorkflowStructs.RoyaltyShare({
+                recipient: authors[0],
+                percentage: PERCENTAGE_SCALE // 100%
+            });
         } else {
-            // Validate royalty shares sum to 100%
-            uint32 totalShares = 0;
-            for (uint i = 0; i < royaltyShares.length; i++) {
-                totalShares += royaltyShares[i].percentage;
-            }
-            require(
-                totalShares == 100_000_000,
-                "Royalty shares must sum to 100%"
+            // Single author via royaltyShares parameter: validate sum
+            _validateRoyaltySharesSum(royaltyShares);
+            finalRoyaltyShares = royaltyShares;
+        }
+
+        // Story Protocol Registration
+        (ipId, tokenId, licenseTermsIds) = royaltyDistributionWorkflows
+            .mintAndRegisterIpAndAttachPILTermsAndDistributeRoyaltyTokens(
+                spgNftCollection,
+                recipient,
+                ipMetadata,
+                licenseTermsData,
+                finalRoyaltyShares,
+                allowDuplicates
             );
 
-            // Mint + Register + Attach Licenses + Deploy Vault + Distribute Royalty Tokens for single author
-            (ipId, tokenId, licenseTermsIds) = royaltyDistributionWorkflows
-                .mintAndRegisterIpAndAttachPILTermsAndDistributeRoyaltyTokens(
-                    spgNftCollection,
-                    recipient,
-                    ipMetadata,
-                    licenseTermsData,
-                    royaltyShares,
-                    allowDuplicates
-                );
-        }
-
-        // Store custom fee if commercial license is included
-        if (_hasCommercialLicense(licenseTypes) && customCommercialFee > 0) {
-            customLicenseFees[ipId] = customCommercialFee;
-        }
-
-        // Get the deployed royalty vault address for the event
+        // Event emission
         address royaltyVault = royaltyModule.ipRoyaltyVaults(ipId);
-
-        emit BookRegistered(ipId, tokenId, licenseTermsIds, royaltyVault);
+        emit BookRegistered(
+            ipId,
+            tokenId,
+            licenseTermsIds,
+            royaltyVault,
+            finalRoyaltyShares.length
+        );
     }
 
-    ///@notice Register derivative with custom royalty distribution (single or multiple authors)
-    ///@dev For complex collaborations where multiple people split derivative royalties
-    ///@param derivativeRecipient Recipient of the derivative IP Asset
-    ///@param parentIpIds Array of parent IP Asset IDs this derivative is based on (Max 16 parents)
-    ///@param licenseTermsIds Array of license terms IDs corresponding to each parent
-    ///@param derivativeMetadata Metadata for the derivative IP Asset
-    ///@param royaltyShares Information for royalty token distribution if single author
-    ///@param authors Array of author addresses to receive royalty tokens
-    ///@param authorShares Array of shares corresponding to each author (in Story format, e.g. 5% = 5000000)
-    ///@param maxMintingFee Maximum fee the user is willing to pay
-    ///@param maxRts Maximum royalty tokens for external policies
-    ///@param maxRevenueShare Maximum revenue share percentage
-    ///@param allowDuplicates Whether to allow duplicate metadata
-    ///@return childIpId The ID of the newly created derivative IP Asset
-    ///@return tokenId The NFT token ID of the derivative
-    function registerCollaborativeDerivative(
+    ///@notice Register derivative with custom royalty distribution
+    ///@dev Supports collaborative derivatives with flexible share allocation
+    ///@param derivativeRecipient Recipient of the derivative NFT
+    ///@param parentIpIds Array of parent IP IDs (max 16)
+    ///@param licenseTermsIds License term IDs for each parent
+    ///@param derivativeMetadata Metadata for derivative
+    ///@param royaltyShares Single-author distribution (ignored if authors provided)
+    ///@param authors Multiple authors (empty = use royaltyShares)
+    ///@param authorShares Shares for each author
+    ///@param maxMintingFee Maximum acceptable minting fee
+    ///@param maxRts Maximum royalty tokens
+    ///@param maxRevenueShare Maximum revenue share
+    ///@param allowDuplicates Allow duplicate metadata
+    ///@return childIpId Derivative IP ID
+    ///@return tokenId Derivative token ID
+    function registerDerivative(
         address derivativeRecipient,
         address[] calldata parentIpIds,
         uint256[] calldata licenseTermsIds,
