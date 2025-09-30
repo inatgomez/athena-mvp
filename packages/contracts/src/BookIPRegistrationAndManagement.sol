@@ -132,6 +132,10 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
             revert InvalidAddress("supportedCurrency");
         if (_royaltyPolicyAddress == address(0))
             revert InvalidAddress("royaltyPolicyAddress");
+        if (address(_registrationWorkflows).code.length == 0)
+            revert InvalidAddress("registrationWorkflows not a contract");
+        if (address(_royaltyModule).code.length == 0)
+            revert InvalidAddress("royaltyModule not a contract");
 
         registrationWorkflows = IRegistrationWorkflows(_registrationWorkflows);
         royaltyDistributionWorkflows = IRoyaltyTokenDistributionWorkflows(
@@ -424,9 +428,11 @@ contract BookIPRegistrationAndManagement is Ownable, Pausable {
     function payTip(
         address ipId,
         uint256 amount,
-        string calldata message
+        string calldata message,
+        uint256 maxAppFeePercent
     ) external whenNotPaused {
         if (amount == 0) revert InvalidAmount();
+        if (appRoyaltyFeePercent > maxAppFeePercent) revert("Fee too high");
 
         // Calculations (checks)
         uint256 appFee = (amount * appRoyaltyFeePercent) / PERCENTAGE_SCALE;
