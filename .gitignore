@@ -16,7 +16,7 @@ apps/*/.next
 
 # Foundry Build artifacts
 packages/contracts/artifacts/
-packages/contracts/cache/
+packages/contracts/forge-cache/
 packages/contracts/out/
 packages/contracts/broadcast/
 
