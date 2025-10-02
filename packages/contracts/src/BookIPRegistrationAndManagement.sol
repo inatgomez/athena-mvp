@@ -5,6 +5,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ERC721Holder} from "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
 import {ISPGNFT} from "@storyprotocol/periphery/interfaces/ISPGNFT.sol";
 import {IRegistrationWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IRegistrationWorkflows.sol";
 import {IRoyaltyTokenDistributionWorkflows} from "@storyprotocol/periphery/interfaces/workflows/IRoyaltyTokenDistributionWorkflows.sol";
@@ -19,7 +20,7 @@ import {PILFlavors} from "@storyprotocol/core/lib/PILFlavors.sol";
 ///@title BookIPRegistrationAndManagement.sol
 ///@notice Gateway contract for registering books as IP on Story Protocol with full royalty management.
 
-contract BookIPRegistrationAndManagement is Ownable, Pausable {
+contract BookIPRegistrationAndManagement is Ownable, Pausable, ERC721Holder {
     using SafeERC20 for IERC20;
     // State variables
     IRegistrationWorkflows public immutable registrationWorkflows;
