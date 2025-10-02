@@ -28,7 +28,7 @@ contract DerivativeCreationTest is BaseTest {
 
         // Setup derivative parameters
         _fundAccount(bob, 1000 * 10 ** 18);
-        _approveForAccount(bob, address(bookContract));
+        _approveForAccount(bob, address(ROYALTY_DISTRIBUTION_WORKFLOWS));
 
         WorkflowStructs.IPMetadata memory derivMetadata = _createBookMetadata(
             "Derivative-SingleParent-Commercial"
