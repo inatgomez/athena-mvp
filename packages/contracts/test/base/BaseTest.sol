@@ -439,16 +439,6 @@ abstract contract BaseTest is Test {
     ) internal {
         PILTerms memory terms = PIL_TEMPLATE.getLicenseTerms(licenseTermsId);
 
-        // Verify royalty policy
-        assertEq(
-            terms.royaltyPolicy,
-            ROYALTY_POLICY_LAP,
-            "Royalty policy should be LAP"
-        );
-
-        // Verify currency token
-        assertEq(terms.currency, MERC20_ADDRESS, "Currency should be MERC20");
-
         // Verify commercial use flag
         assertEq(
             terms.commercialUse,
@@ -459,12 +449,34 @@ abstract contract BaseTest is Test {
         // Verify minting fee
         assertEq(terms.defaultMintingFee, expectedFee, "Minting fee mismatch");
 
-        // Verify royalty percentage (only check if commercial)
         if (expectCommercialUse) {
+            // Commercial license: check royalty policy and currency
+            assertEq(
+                terms.royaltyPolicy,
+                ROYALTY_POLICY_LAP,
+                "Royalty policy should be LAP"
+            );
+            assertEq(
+                terms.currency,
+                MERC20_ADDRESS,
+                "Currency should be MERC20"
+            );
             assertEq(
                 terms.commercialRevShare,
                 expectedRoyaltyPercent,
                 "Royalty percentage mismatch"
+            );
+        } else {
+            // Non-commercial license: expect zero addresses
+            assertEq(
+                terms.royaltyPolicy,
+                address(0),
+                "Royalty policy should be zero for non-commercial"
+            );
+            assertEq(
+                terms.currency,
+                address(0),
+                "Currency should be zero for non-commercial"
             );
         }
     }
