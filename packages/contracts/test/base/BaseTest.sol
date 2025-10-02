@@ -136,9 +136,6 @@ abstract contract BaseTest is Test {
         bookContract.setAuthorized(carol, true);
         bookContract.setAuthorized(dave, true);
         vm.stopPrank();
-
-        // NOTE: Lazy funding - only fund accounts when needed in specific tests
-        // NOTE: Test-specific approvals - avoid max approval anti-pattern
     }
 
     // Optimized Funding & Approval Helpers
@@ -254,47 +251,41 @@ abstract contract BaseTest is Test {
 
     // Derivative creation helper
 
-    /// @dev Asserts parent-child license terms linkage
-    function assertParentLicenseTermsLink(
-    address childIpId,
-    address parentIpId,
-    uint256 expectedLicenseTermsId
-    ) internal {
-    (address licenseTemplate, uint256 licenseTermsId) = 
-        LICENSE_REGISTRY.getParentLicenseTerms(childIpId, parentIpId);
-    
-    assertEq(licenseTemplate, address(PIL_TEMPLATE), "Template mismatch");
-    assertEq(licenseTermsId, expectedLicenseTermsId, "License terms mismatch");
-    }
-    
     /// @dev Helper: Register parent book and return registration data
-    function _registerParentBook(address author) internal returns (
-    address ipId,
-    uint256 tokenId,
-    uint256 licenseTermsId
-    ) {
-    _fundAccount(author, 1000 * 10 ** 18);
-    _approveForAccount(author, address(bookContract));
-    
-    WorkflowStructs.IPMetadata memory metadata = _createBookMetadata(
-        string(abi.encodePacked("Parent-", vm.toString(author)))
-    );
-    uint8[] memory licenseTypes = _toUint8Array(0);
-    
-    vm.prank(author);
-    (ipId, tokenId, uint256[] memory licenseTermsIds) = bookContract.registerBook(
-        author,
-        metadata,
-        licenseTypes,
-        DEFAULT_COMMERCIAL_FEE,
-        DEFAULT_COMMERCIAL_ROYALTY,
-        new WorkflowStructs.RoyaltyShare[](0),
-        _toAddressArray(author),
-        new uint256[](0),
-        false
-    );
-    
-    licenseTermsId = licenseTermsIds[0];
+    function _registerParentBook(
+        address author
+    )
+        internal
+        returns (address bookIpId, uint256 nftTokenId, uint256 licenseTermsId)
+    {
+        _fundAccount(author, 1000 * 10 ** 18);
+        _approveForAccount(author, address(bookContract));
+
+        WorkflowStructs.IPMetadata memory metadata = _createBookMetadata(
+            string(abi.encodePacked("Parent-", vm.toString(author)))
+        );
+        uint8[] memory licenseTypes = _toUint8Array(0);
+
+        vm.prank(author);
+        (
+            address ipId,
+            uint256 tokenId,
+            uint256[] memory licenseTermsIds
+        ) = bookContract.registerBook(
+                author,
+                metadata,
+                licenseTypes,
+                DEFAULT_COMMERCIAL_FEE,
+                DEFAULT_COMMERCIAL_ROYALTY,
+                new WorkflowStructs.RoyaltyShare[](0),
+                _toAddressArray(author),
+                new uint256[](0),
+                false
+            );
+
+        bookIpId = ipId;
+        nftTokenId = tokenId;
+        licenseTermsId = licenseTermsIds[0];
     }
 
     // Claim Revenue Helpers
@@ -476,6 +467,23 @@ abstract contract BaseTest is Test {
                 "Royalty percentage mismatch"
             );
         }
+    }
+
+    /// @dev Asserts parent-child license terms linkage
+    function assertParentLicenseTermsLink(
+        address childIpId,
+        address parentIpId,
+        uint256 expectedLicenseTermsId
+    ) internal {
+        (address licenseTemplate, uint256 licenseTermsId) = LICENSE_REGISTRY
+            .getParentLicenseTerms(childIpId, parentIpId);
+
+        assertEq(licenseTemplate, address(PIL_TEMPLATE), "Template mismatch");
+        assertEq(
+            licenseTermsId,
+            expectedLicenseTermsId,
+            "License terms mismatch"
+        );
     }
 
     /// @dev Asserts IPAccount is deployed for IP
