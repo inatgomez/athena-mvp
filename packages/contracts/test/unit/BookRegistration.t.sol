@@ -10,7 +10,7 @@ import {BookIPRegistrationAndManagement} from "../../src/BookIPRegistrationAndMa
 /// @title BookRegistration Test Suite
 /// @notice Critical path tests for book IP registration functionality
 /// @dev Tests single/multi-author flows, license attachment, and Story Protocol integration
-/// @dev Run with: forge test --match-contract BookRegistrationTest -vvv
+/// @dev Run with: forge test --fork-url https://aeneid.storyrpc.io/ --match-path test/unit/BookRegistration.t.sol -vvv --via-ir
 contract BookRegistrationTest is BaseTest {
     // SINGLE AUTHOR REGISTRATION - CRITICAL PATH
 
