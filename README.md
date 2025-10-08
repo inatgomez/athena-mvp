@@ -1,6 +1,6 @@
 # ATHENA: KNOWLEDGE NETWORK
 
-**Project Status: In Progress**
+**Project Status: Paused**
 
 ATHENA is a Story Protocol-powered platform enabling authors to register books as blockchain IP assets with automated royalty distribution, multi-author collaboration, and derivative work tracking.
 
@@ -44,7 +44,6 @@ ATHENA is a Story Protocol-powered platform enabling authors to register books a
 - ✅ Derivative work registration with parent tracking
 - 🔄 Frontend integration with contract functions
 - 🔄 IPFS content storage implementation
-- ⏳ IPFi implementation to support knowledge creation
 - ⏳ Dispute module implementation to enforce copyright protection
 
 ## Project Goals
